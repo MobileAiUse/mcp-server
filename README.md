@@ -1,64 +1,64 @@
 # phone-agent-mcp
 
-> 本地 MCP Server — 将 WebADB 浏览器中的 AI Agent 能力暴露为 MCP Tools，供 OpenClaw / Qoder 等外部 AI 客户端通过标准协议调用。
+> Local MCP Server — Exposes the AI Agent capabilities from the WebADB browser page as MCP Tools, allowing external AI clients such as OpenClaw / Qoder to invoke them via the standard MCP protocol.
 
-## 架构概览
+## Architecture Overview
 
 ```
-外部 AI 客户端（Qoder / OpenClaw / 浏览器端 MCP 客户端）
+External AI Client (Qoder / OpenClaw / Browser-side MCP Client)
         │
-        │  Streamable HTTP（SSE 流，首选） 或 stdio（JSON-RPC 2.0）
+        │  Streamable HTTP (SSE stream, preferred) or stdio (JSON-RPC 2.0)
         ▼
 ┌───────────────────┐      WebSocket       ┌──────────────────────────────┐
-│  phone-agent-mcp  │ ◄──────────────────► │  Mobile AI Agent 浏览器页面    │
-│  (Node.js 进程)    │    ws://localhost    │  (https://mobile-ai-use.com) │
+│  phone-agent-mcp  │ ◄──────────────────► │  Mobile AI Agent Browser Page│
+│  (Node.js Process)│    ws://localhost    │  (https://mobile-ai-use.xyz) │
 │                   │      :7788           │                              │
 │  ┌──────────────┐ │                      │  ┌─────────────────┐         │
 │  │ McpServer    │ │  callBrowser()       │  │ MCP Relay       │         │
 │  │ (HTTP+stdio) │ │ ──── tool/args ────► │  │ (WS Client)     │         │
 │  │              │ │ ◄─── result ──────── │  │                 │         │
-│  │ 9 个 Tools   │ │                      │  │ Agent 调度       │         │
-│  │              │ │  progress ◄───────── │  │ 工具执行         │         │
+│  │ 9 Tools      │ │                      │  │ Agent Scheduler │         │
+│  │              │ │  progress ◄───────── │  │ Tool Executor   │         │
 │  └──────────────┘ │                      │  └─────────────────┘         │
 └───────────────────┘                      └──────────────────────────────┘
 ```
 
-- **MCP 层**：基于 `@modelcontextprotocol/sdk` 的 `McpServer`，提供两种传输通道：
-  - **Streamable HTTP**（默认 `7789` 端口，`/mcp` 端点）：SSE 流式输出结果与中间过程，支持多会话，首选通道
-  - **stdio**：兼容 Qoder / OpenClaw 等本地 CLI 类客户端的传统接入方式
-- **中继层**：内嵌 `ws` WebSocket Server（默认 `7788` 端口），将工具调用请求转发给浏览器页面中的 MCP Relay
-- **进度上报**：支持 MCP `notifications/progress` 协议，Agent 思考/执行过程实时推送至客户端
-- **Tasks 扩展**：支持 MCP Tasks 扩展（`io.modelcontextprotocol/tasks`），长耗时任务异步化，客户端可轮询状态、获取进度、断连后恢复
+- **MCP Layer**: Built on `@modelcontextprotocol/sdk`'s `McpServer`, providing two transport channels:
+  - **Streamable HTTP** (default port `7789`, `/mcp` endpoint): SSE streaming output for results and intermediate progress, supports multiple sessions — the preferred channel
+  - **stdio**: Traditional transport compatible with local CLI clients such as Qoder / OpenClaw
+- **Relay Layer**: Embedded `ws` WebSocket Server (default port `7788`), forwarding tool call requests to the MCP Relay in the browser page
+- **Progress Reporting**: Supports the MCP `notifications/progress` protocol, pushing Agent thinking/execution progress to clients in real time
+- **Tasks Extension**: Supports the MCP Tasks extension (`io.modelcontextprotocol/tasks`), making long-running tasks asynchronous — clients can poll status, receive progress, and recover after disconnection
 
-## 前置条件
+## Prerequisites
 
 - **Node.js** ≥ 18
-- **pnpm**（推荐，项目统一包管理器）
-- **Mobile AI Use 浏览器页面**已打开并运行（`https://mobile-ai-use.com`），页面顶栏 MCP Relay 状态指示器绿色亮起即表示已连接
+- **pnpm** (recommended, the project's unified package manager)
+- **Mobile AI Use browser page** open and running (`https://mobile-ai-use.xyz`), with the MCP Relay status indicator in the top bar showing green (connected)
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 1. 进入 mcp-server 目录
+# 1. Enter the mcp-server directory
 cd mcp-server
 
-# 2. 安装依赖
+# 2. Install dependencies
 pnpm install
 
-# 3. 构建（生成 dist/server.js）
+# 3. Build (generates dist/server.js)
 pnpm run build
 
-# 4. 启动服务
+# 4. Start the server
 pnpm start
 ```
 
-开发模式（无需构建，直接运行 TypeScript）：
+Development mode (runs TypeScript directly without building):
 
 ```bash
 pnpm run dev
 ```
 
-启动成功后，控制台输出：
+After successful startup, the console outputs:
 
 ```
 [phone-agent-mcp] WebSocket relay on ws://localhost:7788
@@ -66,66 +66,108 @@ pnpm run dev
 [phone-agent-mcp] Streamable HTTP on http://localhost:7789/mcp
 ```
 
-## 环境变量
+## Environment Variables
 
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `PHONE_AGENT_WS_PORT` | `7788` | WebSocket 中继端口号 |
-| `PHONE_AGENT_HTTP_PORT` | `7789` | Streamable HTTP 端口号 |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHONE_AGENT_WS_PORT` | `7788` | WebSocket relay port |
+| `PHONE_AGENT_HTTP_PORT` | `7789` | Streamable HTTP port (also serves the `/adb/*` control plane) |
+| `PHONE_AGENT_ADB_WS_PORT` | `7790` | ADB over WebSocket binary bridge port |
+| `PHONE_AGENT_ADB_SERVER_HOST` | `127.0.0.1` | Local adb server host (control plane `/adb/*` only) |
+| `PHONE_AGENT_ADB_SERVER_PORT` | `5037` | Local adb server port (control plane `/adb/*` only) |
+| `PHONE_AGENT_BIND_HOST` | `127.0.0.1` | Bridge/control-plane bind address; a token is required when non-loopback |
+| `PHONE_AGENT_ADB_TOKEN` | (empty) | Shared token enforced on non-loopback binds (used by both bridge and control plane) |
 
-## 注册的工具（Tools）
+## ADB over WebSocket Bridge
 
-| 工具名 | 权限 | 超时 | 说明 |
-|--------|------|------|------|
-| `run_agent_task` | 写入 | 可配置 | 在已连接的手机上运行 AI Agent 任务，传入自然语言目标（支持 Tasks 扩展异步执行） |
-| `abort_task` | 写入 | 10s | 中止当前正在运行的 Agent 任务 |
-| `get_task_result` | 只读 | 10s | 按任务 ID 获取已完成任务的详细结果（含步骤） |
-| `get_latest_task` | 只读 | 10s | 获取当前对话中最近一次 Agent 任务的结果 |
-| `take_screenshot` | 只读 | 30s | 对已连接的手机屏幕截图，返回 PNG 图片 |
-| `get_device_status` | 只读 | 15s | 获取设备信息（型号、品牌、系统版本等） |
-| `search_memory` | 只读 | 10s | 按关键词搜索 Agent 的持久化记忆库 |
-| `save_memory` | 写入 | 10s | 保存一条语义记忆到记忆库 |
-| `delete_memory` | 写入 | 10s | 按 ID 删除一条记忆 |
-
-### `run_agent_task` 详解
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `goal` | `string` | 是 | 自然语言任务目标，如 "打开微信，向张三发送你好" |
-| `timeoutMs` | `number` | 否 | 最大执行时间（毫秒），默认 1,200,000（20 分钟） |
-
-Agent 将自动规划执行步骤，通过屏幕视觉识别和触摸控制完成目标。执行期间的思考/工具调用/步骤结果会通过 MCP `notifications/progress` 实时推送。
-
-## MCP Tasks 扩展（异步长耗时任务）
-
-`run_agent_task` 注册为 **task-based 工具**（`taskSupport: 'optional'`），支持 MCP Tasks 扩展（`io.modelcontextprotocol/tasks`），解决长耗时操作的阻塞与连接中断问题。
-
-### 工作流程
+Besides direct WebUSB, the web page can also treat a **remote/networked phone** as a first-class device: the host running `phone-agent-mcp` connects directly to the phone's adbd (`ip:port`, i.e. `adb tcpip` mode) and bridges the raw ADB stream to the browser over a WebSocket. The browser reuses `AdbDaemonWebSocketDevice` to produce a standard `Adb` instance, so screen mirroring / AI Agent / workflows all work with zero downstream changes.
 
 ```
-客户端                                     服务端
-  │  tools/call run_agent_task              │
-  │  params: { arguments, task: { ttl } }   │
-  ├──────────────────────────────────────►│  createTask → 立即返回
-  │  CreateTaskResult { task: { taskId,    │  后台继续执行
-  │    status: 'working', pollInterval } } │
-  │◄──────────────────────────────────────┤
-  │  tasks/get { taskId }   ◄── 轮询 ───►  │  notifications/tasks/status 主动推送
-  │  … 状态：working（statusMessage=进度）…  │
-  │  tasks/result { taskId }                │  任务完成后
-  │◄────────────── CallToolResult ─────────┤
+Remote phone adbd (adb tcpip 5555)
+        ▲  direct TCP to <ip:port>, raw ADB bytes relayed both ways
+        │
+phone-agent-mcp  ──  binary bridge WS (:7790)  ──►  Browser AdbDaemonWebSocketDevice
 ```
 
-### 任务状态
+### Control-plane endpoints (reuse the `7789` httpServer)
 
-| 状态 | 含义 |
-|------|------|
-| `working` | 任务执行中，`statusMessage` 携带最新进度（Agent 思考/步骤） |
-| `completed` | 任务成功完成，可通过 `tasks/result` 获取最终结果 |
-| `failed` | 任务失败（含浏览器未连接、超时等），结果中包含错误信息 |
-| `cancelled` | 客户端通过 `tasks/cancel` 取消 |
+| Endpoint | Method | Body | Success response | Description |
+|----------|--------|------|------------------|-------------|
+| `/adb/devices` | GET | — | `{ "devices": [ { serial, state, model?, device?, product? } ] }` | List devices currently known to the local adb server |
+| `/adb/connect` | POST | `{ "host": "192.168.1.5", "port": 5555 }` | `{ "ok": true, "message": "..." }` | Make the host `adb connect` to the remote phone; failure returns `502` + `{ ok:false, message }` |
+| `/adb/disconnect` | POST | `{ "serial": "192.168.1.5:5555" }` | `{ "ok": true, "message": "..." }` | `adb disconnect` the given device |
 
-### 服务端能力声明
+Error conventions: unauthorized `401`; missing param / malformed JSON `400`; wrong method `405` (with `Allow` header); unknown path `404`; no local adb (not on PATH) `503`; any other failure `500`.
+
+### Bridge endpoint (`7790`)
+
+The browser connects via `ws://<host>:7790/?serial=<serial>[&token=<token>]`; the bridge parses `serial` as `ip:port`, opens a direct TCP connection to the phone's adbd and relays bytes bidirectionally (the browser performs the CNXN/AUTH handshake itself). `serial` must be `ip:port`; USB serials are not supported (use WebUSB instead). Only one active bridge per `serial` is allowed; duplicate connections are rejected. Close codes: `4401` invalid token / `4400` missing serial or serial is not `ip:port` / `4409` device busy / `4502` failed to connect to adbd (refused / timeout / unreachable) / `4503` adbd connection errored or closed.
+
+### Prerequisites
+
+- adb is on the host `PATH` (`adb version` works).
+- The remote phone has been switched with `adb tcpip 5555` and is reachable at its `ip:port`. The random TLS port of Android 11+ "Wireless debugging" is not supported by the bridge yet.
+- The browser uses its own ADB key, so the phone shows an "Allow USB debugging" prompt on the first bridge; confirm it on the phone.
+
+### Security
+
+- **localhost needs no token**: when `PHONE_AGENT_BIND_HOST` is loopback (default), the control plane only accepts requests whose peer is a loopback address, and the bridge needs no token.
+- **Non-loopback enforces a token**: binding to a non-loopback address requires `PHONE_AGENT_ADB_TOKEN`; otherwise the startup guard `assertBridgeAuth` throws and aborts startup. Afterwards the control plane requires `Authorization: Bearer <token>` or `?token=<token>`, and the bridge requires `?token=<token>`.
+- **Mixed content**: if the page is served over `https`, the browser blocks `ws://`; configure `wss://` for the bridge (TLS terminated by a reverse proxy).
+
+## Registered Tools
+
+| Tool | Permission | Timeout | Description |
+|------|------------|---------|-------------|
+| `run_agent_task` | Write | Configurable | Run an AI Agent task on the connected phone with a natural language goal (supports async execution via the Tasks extension) |
+| `abort_task` | Write | 10s | Abort the currently running Agent task |
+| `get_task_result` | Read | 10s | Get detailed results (including steps) of a completed task by task ID |
+| `get_latest_task` | Read | 10s | Get the result of the most recent Agent task in the current conversation |
+| `take_screenshot` | Read | 30s | Take a screenshot of the connected phone screen, returns a PNG image |
+| `get_device_status` | Read | 15s | Get device information (model, brand, OS version, etc.) |
+| `search_memory` | Read | 10s | Search the Agent's persistent memory store by keyword |
+| `save_memory` | Write | 10s | Save a semantic memory entry to the memory store |
+| `delete_memory` | Write | 10s | Delete a memory entry by ID |
+
+### `run_agent_task` in Detail
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `goal` | `string` | Yes | Natural language task goal, e.g. "Open WeChat and send 'Hello' to Zhang San" |
+| `timeoutMs` | `number` | No | Maximum execution time in milliseconds, default 1,200,000 (20 minutes) |
+
+The Agent will automatically plan execution steps and achieve the goal through screen visual recognition and touch control. During execution, thinking/tool calls/step results are pushed in real time via MCP `notifications/progress`.
+
+## MCP Tasks Extension (Async Long-Running Tasks)
+
+`run_agent_task` is registered as a **task-based tool** (`taskSupport: 'optional'`), supporting the MCP Tasks extension (`io.modelcontextprotocol/tasks`) to address blocking and connection interruption issues with long-running operations.
+
+### Workflow
+
+```
+Client                                          Server
+  │  tools/call run_agent_task                    │
+  │  params: { arguments, task: { ttl } }         │
+  ├──────────────────────────────────────────────►│  createTask → returns immediately
+  │  CreateTaskResult { task: { taskId,           │  continues executing in background
+  │    status: 'working', pollInterval } }        │
+  │◄──────────────────────────────────────────────┤
+  │  tasks/get { taskId }   ◄── poll ───►         │  notifications/tasks/status proactive push
+  │  … status: working (statusMessage=progress) … │
+  │  tasks/result { taskId }                      │  after task completes
+  │◄────────────── CallToolResult ────────────────┤
+```
+
+### Task States
+
+| State | Meaning |
+|-------|---------|
+| `working` | Task is executing; `statusMessage` carries the latest progress (Agent thinking/steps) |
+| `completed` | Task completed successfully; final result available via `tasks/result` |
+| `failed` | Task failed (including browser not connected, timeout, etc.); result contains error details |
+| `cancelled` | Client cancelled via `tasks/cancel` |
+
+### Server Capability Declaration
 
 ```json
 "capabilities": {
@@ -137,27 +179,27 @@ Agent 将自动规划执行步骤，通过屏幕视觉识别和触摸控制完�
 }
 ```
 
-支持的端点：`tasks/get`（查状态）、`tasks/result`（取结果）、`tasks/list`（列任务）、`tasks/cancel`（取消）。
+Supported endpoints: `tasks/get` (check status), `tasks/result` (get result), `tasks/list` (list tasks), `tasks/cancel` (cancel).
 
-### 关键参数
+### Key Parameters
 
-| 参数 | 取值 | 说明 |
-|------|------|------|
-| TTL | `timeoutMs + 10min` | 任务完成后结果保留时长，过期自动清理 |
-| pollInterval | `2000ms` | 建议客户端轮询间隔 |
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| TTL | `timeoutMs + 10min` | How long results are retained after task completion; auto-cleaned after expiry |
+| pollInterval | `2000ms` | Recommended client polling interval |
 
-### 向后兼容
+### Backward Compatibility
 
-- **新客户端**（声明 tasks 能力）：带 `task` 参数调用 → 立即获得 `taskId`，轮询 `tasks/get` / 取结果 `tasks/result`
-- **旧客户端**（不带 `task` 参数）：服务端自动降级为内部轮询，同步等待并直接返回 `CallToolResult`，行为与旧版一致
+- **New clients** (declare tasks capability): Call with `task` parameter → immediately receive `taskId`, poll `tasks/get` / fetch result via `tasks/result`
+- **Legacy clients** (no `task` parameter): Server automatically falls back to internal polling, synchronously waits and returns `CallToolResult` directly — behavior identical to the previous version
 
-> 注：`tasks/cancel` 仅标记任务取消并停止结果写入；如需真正中断手机端执行，请另行调用 `abort_task` 工具。
+> Note: `tasks/cancel` only marks the task as cancelled and stops result writing; to actually interrupt execution on the phone, call the `abort_task` tool separately.
 
-## 配置到 AI 客户端
+## Configuration for AI Clients
 
-### Streamable HTTP（推荐）
+### Streamable HTTP (Recommended)
 
-支持远程/HTTP 接入的客户端（含浏览器端 MCP 客户端）直接指向 URL：
+Clients supporting remote/HTTP connections (including browser-side MCP clients) can point directly to the URL:
 
 ```json
 {
@@ -169,7 +211,7 @@ Agent 将自动规划执行步骤，通过屏幕视觉识别和触摸控制完�
 }
 ```
 
-验证连通性：
+Verify connectivity:
 
 ```bash
 curl -N -X POST http://localhost:7789/mcp \
@@ -178,11 +220,11 @@ curl -N -X POST http://localhost:7789/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-响应头 `mcp-session-id` 即会话 ID，后续请求需携带；响应体为 SSE 流（`text/event-stream`）。
+The `mcp-session-id` response header is the session ID, which must be included in subsequent requests; the response body is an SSE stream (`text/event-stream`).
 
-### stdio（Qoder / Claude Desktop / OpenClaw 本地接入）
+### stdio (Qoder / Claude Desktop / OpenClaw Local Integration)
 
-在客户端的 MCP 配置文件中添加：
+Add the following to the client's MCP configuration file:
 
 ```json
 {
@@ -210,74 +252,74 @@ mcp_servers:
       PHONE_AGENT_WS_PORT: "7788"
 ```
 
-配置完成后，AI 客户端中即可看到上述 9 个手机 Agent 工具，直接调用即可操控手机。
+After configuration, all 9 phone Agent tools listed above will be available in the AI client — invoke them directly to control the phone.
 
-## Streamable HTTP 传输详解
+## Streamable HTTP Transport Details
 
-Streamable HTTP 是 MCP 标准传输协议，服务端通过 **SSE 流**在同一个 HTTP 响应内依次输出**中间过程通知**与**最终结果**，无需客户端额外轮询：
+Streamable HTTP is the standard MCP transport protocol. The server outputs **intermediate progress notifications** and **final results** sequentially within the same HTTP response via an **SSE stream**, eliminating the need for additional client polling:
 
-| 端点 | 方法 | 作用 |
-|------|------|------|
-| `/mcp` | POST | 客户端消息入口（initialize / tools/call / tasks/* 等），响应为 SSE 流 |
-| `/mcp` | GET | 打开独立 SSE 流，接收服务端主动推送（如 `notifications/tasks/status`） |
-| `/mcp` | DELETE | 关闭会话 |
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/mcp` | POST | Client message entry point (initialize / tools/call / tasks/* etc.), response is an SSE stream |
+| `/mcp` | GET | Opens a dedicated SSE stream to receive server-initiated pushes (e.g. `notifications/tasks/status`) |
+| `/mcp` | DELETE | Close the session |
 
-### 流式输出内容
+### Streaming Output Content
 
-长耗时工具（如 `run_agent_task`）执行期间，响应流内会实时推送：
+During execution of long-running tools (e.g. `run_agent_task`), the response stream pushes in real time:
 
-- `notifications/progress`：Agent 思考/执行进度（客户端声明 `progressToken` 时）
-- `notifications/message`：进度日志降级通道
-- `notifications/tasks/status`：任务状态变更（working/completed/failed）
+- `notifications/progress`: Agent thinking/execution progress (when client declares `progressToken`)
+- `notifications/message`: Fallback channel for progress log downgrades
+- `notifications/tasks/status`: Task state changes (working/completed/failed)
 
-流末尾为最终 `CallToolResult` 或 `CreateTaskResult`（task 模式）。
+The end of the stream contains the final `CallToolResult` or `CreateTaskResult` (task mode).
 
-### 会话管理
+### Session Management
 
-- **有状态模式**：服务端生成 sessionId，随 `initialize` 响应头 `mcp-session-id` 下发，后续请求必须携带
-- **每会话一个 McpServer 实例**；工具 handler 共享全局浏览器中继与任务存储（`taskStore` 跨会话，断连重连后可继续轮询任务）
-- **CORS 已放开**：浏览器端 MCP 客户端可直接访问
+- **Stateful mode**: Server generates a sessionId, delivered via the `mcp-session-id` response header with `initialize`; subsequent requests must include it
+- **One McpServer instance per session**; tool handlers share a global browser relay and task store (`taskStore` is cross-session — tasks can continue to be polled after disconnect/reconnect)
+- **CORS is open**: Browser-side MCP clients can access directly
 
-## 连接流程
+## Connection Flow
 
-1. **启动 mcp-server**：`pnpm start`，启动 stdio / Streamable HTTP 双通道和 WS 中继
-2. **打开浏览器页面**：访问 WebADB 页面，确保设备已连接
-3. **确认 Relay 连接**：页面顶栏 Relay 状态指示器变绿，控制台输出 `Browser connected`
-4. **接入 MCP 客户端**：
-   - HTTP 客户端指向 `http://localhost:7789/mcp`（initialize 后携带 `mcp-session-id`）
-   - 本地 CLI 客户端通过 stdio 启动 `node dist/server.js`
-5. **调用工具**：请求经 WS 转发至浏览器执行，结果与中间过程经 SSE / stdio 流式返回
+1. **Start mcp-server**: `pnpm start` — launches stdio / Streamable HTTP dual channels and the WS relay
+2. **Open the browser page**: Navigate to the WebADB page, ensuring the device is connected
+3. **Confirm Relay connection**: The Relay status indicator in the top bar turns green; console outputs `Browser connected`
+4. **Connect MCP client**:
+   - HTTP clients point to `http://localhost:7789/mcp` (include `mcp-session-id` after initialize)
+   - Local CLI clients launch via stdio: `node dist/server.js`
+5. **Invoke tools**: Requests are forwarded via WebSocket to the browser for execution; results and intermediate progress are streamed back via SSE / stdio
 
-## 项目结构
+## Project Structure
 
 ```
 mcp-server/
 ├── src/
-│   └── server.ts          # 主服务：McpServer + WS + 8 个工具注册
+│   └── server.ts          # Main server: McpServer + WS + 9 tool registrations
 ├── dist/
-│   └── server.js          # 编译产物
+│   └── server.js          # Build output
 ├── package.json
-├── tsconfig.json           # TypeScript 配置（ES2022 / NodeNext）
+├── tsconfig.json           # TypeScript config (ES2022 / NodeNext)
 └── pnpm-lock.yaml
 ```
 
-## 技术栈
+## Tech Stack
 
-| 组件 | 版本 | 用途 |
-|------|------|------|
-| `@modelcontextprotocol/sdk` | ^1.12.0 | MCP 服务端框架（McpServer + StdioServerTransport） |
-| `ws` | ^8.18.0 | WebSocket 服务端，中继浏览器连接 |
-| `zod` | ^4.4.3 | 工具参数校验与 Schema 声明 |
-| `typescript` | ~5.8.3 | 类型安全 |
-| `tsx` | ^4.19.0 | 开发模式直接运行 TS |
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| `@modelcontextprotocol/sdk` | ^1.12.0 | MCP server framework (McpServer + StdioServerTransport) |
+| `ws` | ^8.18.0 | WebSocket server, relays browser connection |
+| `zod` | ^4.4.3 | Tool parameter validation and schema declarations |
+| `typescript` | ~5.8.3 | Type safety |
+| `tsx` | ^4.19.0 | Run TS directly in development mode |
 
-## 设计要点
+## Design Highlights
 
-- **双传输通道**：Streamable HTTP（SSE 流式输出结果与中间过程，多会话）与 stdio（本地 CLI 兼容）并存，工具注册逻辑由 `createPhoneAgentServer()` 工厂函数统一提供
-- **任务存储跨会话共享**：`InMemoryTaskStore` 全局单例，客户端断连重连（新会话）后仍可通过 `tasks/get` / `tasks/result` 继续轮询未过期任务
-- **单浏览器连接**：同一时刻只接受一个浏览器 WS 连接，新连接替换旧连接
-- **请求-响应匹配**：通过 `id` 字段将 WS 响应路由到对应的挂起 Promise
-- **超时兜底**：每个工具调用有独立超时，超时返回错误信息而非挂死
-- **进度双通道**：优先使用 `notifications/progress`（需客户端声明 `progressToken`），降级为 `notifications/message`（logging）；task 模式下同步写入 `task.statusMessage` 并推送 `notifications/tasks/status`
-- **静默容错**：进度推送失败不中断任务执行；任务被取消/TTL 清理后后台写入安全跳过
-- **浏览器离线提示**：WS 未连接时返回友好错误 "Browser not connected"
+- **Dual transport channels**: Streamable HTTP (SSE streaming for results and intermediate progress, multi-session) and stdio (local CLI compatible) coexist; tool registration logic is unified by the `createPhoneAgentServer()` factory function
+- **Cross-session task store sharing**: `InMemoryTaskStore` is a global singleton — clients can continue polling non-expired tasks via `tasks/get` / `tasks/result` after reconnecting (new session)
+- **Single browser connection**: Only one browser WS connection is accepted at a time; new connections replace old ones
+- **Request-response matching**: WS responses are routed to the corresponding pending Promise via the `id` field
+- **Timeout fallback**: Each tool call has an independent timeout; returns an error message on timeout instead of hanging
+- **Dual-channel progress**: Prefers `notifications/progress` (requires client to declare `progressToken`), falls back to `notifications/message` (logging); in task mode, also writes `task.statusMessage` and pushes `notifications/tasks/status` simultaneously
+- **Silent fault tolerance**: Progress push failures do not interrupt task execution; background writes are safely skipped after task cancellation/TTL cleanup
+- **Browser offline hint**: Returns a friendly error "Browser not connected" when the WS is not connected

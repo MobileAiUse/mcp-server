@@ -20,8 +20,13 @@
  *   开发模式：pnpm run dev
  *
  * 环境变量：
- *   PHONE_AGENT_WS_PORT    WebSocket 中继端口，默认 7788
- *   PHONE_AGENT_HTTP_PORT  Streamable HTTP 端口，默认 7789
+ *   PHONE_AGENT_WS_PORT         WebSocket 中继端口，默认 7788
+ *   PHONE_AGENT_HTTP_PORT       Streamable HTTP 端口，默认 7789
+ *   PHONE_AGENT_ADB_WS_PORT     ADB over WebSocket 二进制桥接端口，默认 7790
+ *   PHONE_AGENT_ADB_SERVER_HOST 本机 adb server 主机（仅控制面 /adb/* 使用），默认 127.0.0.1
+ *   PHONE_AGENT_ADB_SERVER_PORT 本机 adb server 端口（仅控制面 /adb/* 使用），默认 5037
+ *   PHONE_AGENT_BIND_HOST       桥接/控制面绑定地址，默认 127.0.0.1（非回环须设 token）
+ *   PHONE_AGENT_ADB_TOKEN       非回环部署时的共享令牌（桥接与控制面共用）
  */
 
 import http from 'node:http';
@@ -34,11 +39,16 @@ import type { CreateTaskRequestHandlerExtra } from '@modelcontextprotocol/sdk/ex
 import type { Task, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
+import { adbConnect, adbDevices, adbDisconnect, AdbNotFoundError } from './adb.js';
+import { startAdbBridge } from './adb-bridge.js';
 
 // ==================== 配置 ====================
 
 const WS_PORT = Number(process.env.PHONE_AGENT_WS_PORT ?? 7788);
 const HTTP_PORT = Number(process.env.PHONE_AGENT_HTTP_PORT ?? 7789);
+const ADB_WS_PORT = Number(process.env.PHONE_AGENT_ADB_WS_PORT ?? 7790);
+const BIND_HOST = process.env.PHONE_AGENT_BIND_HOST ?? '127.0.0.1';
+const ADB_TOKEN = process.env.PHONE_AGENT_ADB_TOKEN;
 
 // ==================== WebSocket 中继层 ====================
 
@@ -471,6 +481,89 @@ async function createSession(): Promise<StreamableHTTPServerTransport> {
     return transport;
 }
 
+/** 统一 JSON 响应 */
+function json(res: http.ServerResponse, status: number, payload: unknown): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+}
+
+/** 请求对端是否为回环地址（含 IPv4-mapped IPv6）。 */
+function isLoopbackAddr(addr?: string): boolean {
+    if (!addr) return false;
+    let a = addr.toLowerCase();
+    if (a.startsWith('::ffff:')) a = a.slice(7);
+    return a === '::1' || a === 'localhost' || a.startsWith('127.');
+}
+
+/**
+ * 控制面鉴权：未设 token 时仅放行来自回环对端的请求（本地开发默认，按实际
+ * remoteAddress 判定，而非配置字符串——httpServer 监听所有网卡，不能靠 BIND_HOST 推断可达性）；
+ * 设了 token 则要求 Authorization: Bearer <token> 或 ?token=<token>。
+ */
+function adbAuthOk(req: http.IncomingMessage): boolean {
+    if (!ADB_TOKEN) return isLoopbackAddr(req.socket.remoteAddress);
+    const auth = req.headers['authorization'];
+    if (typeof auth === 'string' && auth === `Bearer ${ADB_TOKEN}`) return true;
+    const url = new URL(req.url ?? '/', `http://localhost:${HTTP_PORT}`);
+    return url.searchParams.get('token') === ADB_TOKEN;
+}
+
+/** 解析 JSON 请求体：畸形 JSON 直接回 400 并返回 { body: null }；空体归一为 {}。 */
+async function parseJsonBody(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+): Promise<{ body: Record<string, unknown> | null }> {
+    try {
+        const v = await readBody(req);
+        return { body: v && typeof v === 'object' ? (v as Record<string, unknown>) : {} };
+    } catch {
+        json(res, 400, { error: 'invalid JSON body' });
+        return { body: null };
+    }
+}
+
+function methodNotAllowed(res: http.ServerResponse, allow: string): void {
+    res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': allow });
+    res.end(JSON.stringify({ error: 'method not allowed' }));
+}
+
+/** /adb/* 控制面：设备发现与 adb connect/disconnect（二进制流走独立的 7790 桥接端口）。 */
+async function handleAdbControl(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+    if (!adbAuthOk(req)) { json(res, 401, { error: 'unauthorized' }); return; }
+    const method = req.method ?? 'GET';
+    try {
+        if (url.pathname === '/adb/devices') {
+            if (method !== 'GET') return methodNotAllowed(res, 'GET');
+            json(res, 200, { devices: await adbDevices() });
+            return;
+        }
+        if (url.pathname === '/adb/connect') {
+            if (method !== 'POST') return methodNotAllowed(res, 'POST');
+            const { body } = await parseJsonBody(req, res);
+            if (!body) return;
+            const host = body.host as string | undefined;
+            const port = Number(body.port ?? 5555);
+            if (!host) { json(res, 400, { error: 'host required' }); return; }
+            const result = await adbConnect(host, port);
+            json(res, result.ok ? 200 : 502, result);
+            return;
+        }
+        if (url.pathname === '/adb/disconnect') {
+            if (method !== 'POST') return methodNotAllowed(res, 'POST');
+            const { body } = await parseJsonBody(req, res);
+            if (!body) return;
+            const serial = body.serial as string | undefined;
+            if (!serial) { json(res, 400, { error: 'serial required' }); return; }
+            json(res, 200, await adbDisconnect(serial));
+            return;
+        }
+        json(res, 404, { error: 'unknown adb endpoint' });
+    } catch (e) {
+        if (e instanceof AdbNotFoundError) { json(res, 503, { error: e.message }); return; }
+        json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    }
+}
+
 const httpServer = http.createServer(async (req, res) => {
     setCorsHeaders(res);
     if (req.method === 'OPTIONS') {
@@ -479,6 +572,10 @@ const httpServer = http.createServer(async (req, res) => {
     }
 
     const url = new URL(req.url ?? '/', `http://localhost:${HTTP_PORT}`);
+    if (url.pathname.startsWith('/adb/')) {
+        await handleAdbControl(req, res, url);
+        return;
+    }
     if (url.pathname !== '/mcp') {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found. MCP endpoint is /mcp' }));
@@ -527,3 +624,21 @@ console.error('[phone-agent-mcp] MCP server ready (stdio transport)');
 httpServer.listen(HTTP_PORT, () => {
     console.error(`[phone-agent-mcp] Streamable HTTP on http://localhost:${HTTP_PORT}/mcp`);
 });
+
+// ADB over WebSocket 二进制桥接：直连手机 adbd（ip:5555），把裸 ADB 流桥接给浏览器
+try {
+    const bridgeWss = startAdbBridge({
+        port: ADB_WS_PORT,
+        host: BIND_HOST,
+        token: ADB_TOKEN,
+    });
+    // 异步失败（如 7790 端口占用 EADDRINUSE）不能击穿进程：挂 error 监听降级为“桥接禁用”
+    bridgeWss.on('error', (err: Error) => {
+        console.error('[phone-agent-mcp] ADB bridge disabled:', err.message);
+    });
+    bridgeWss.on('listening', () => {
+        console.error(`[phone-agent-mcp] ADB WebSocket bridge on ws://${BIND_HOST}:${ADB_WS_PORT}`);
+    });
+} catch (e) {
+    console.error('[phone-agent-mcp] ADB bridge disabled:', e instanceof Error ? e.message : e);
+}
